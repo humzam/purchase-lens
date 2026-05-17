@@ -150,7 +150,10 @@ async function fetchOrdersViaTab(minDate, maxDate) {
       date: date ? date.toISOString().split('T')[0] : null,
       items: raw.items,
       total: raw.total,
-      chargeAmounts: raw.total ? [raw.total] : [],
+      // Prefer per-shipment amounts parsed from invoice; fall back to order total.
+      chargeAmounts: raw.chargeAmounts?.length > 0
+        ? raw.chargeAmounts
+        : (raw.total ? [raw.total] : []),
     });
   }
 
@@ -296,26 +299,31 @@ async function scrapeOrderHistoryPage() {
     return orders;
   }
 
-  // Helper: fetch the print invoice for one order and return all item names found.
-  // Invoice pages list every item regardless of how many shipments there were.
+  // Fetch the print invoice for one order.
+  // Returns { items: string[], shipmentAmounts: number[] }.
+  // shipmentAmounts contains one entry per shipment/charge so multi-shipment
+  // orders can each be matched to their individual bank statement line.
   async function fetchInvoiceItems(orderId) {
     try {
       const res = await fetch(
         `/gp/css/summary/print.html?ie=UTF8&orderID=${orderId}`,
         { credentials: 'include' }
       );
-      if (!res.ok) return [];
+      if (!res.ok) return { items: [], shipmentAmounts: [] };
       const html = await res.text();
       const doc = new DOMParser().parseFromString(html, 'text/html');
+
+      // ── Item names ──────────────────────────────────────────────────────────
       const items = [];
-      const seen = new Set();
+      const seenItems = new Set();
+
       for (const link of doc.querySelectorAll('a[href*="/dp/"], a[href*="/gp/product/"]')) {
         const name = link.textContent.trim();
-        if (name.length >= 5 && name.length <= 200 && !seen.has(name)) {
-          seen.add(name); items.push(name);
+        if (name.length >= 5 && name.length <= 200 && !seenItems.has(name)) {
+          seenItems.add(name); items.push(name);
         }
       }
-      // Always scan table rows too — some items lack /dp/ links (e.g. consumables, marketplace).
+      // Always scan table rows too — some items lack /dp/ links.
       for (const row of doc.querySelectorAll('tr')) {
         const cells = [...row.querySelectorAll('td')];
         if (cells.length >= 2 && /^\$[\d,.]+$/.test(cells[cells.length - 1].textContent.trim())) {
@@ -323,16 +331,76 @@ async function scrapeOrderHistoryPage() {
           if (
             name.length >= 5 &&
             name.length <= 200 &&
-            !seen.has(name) &&
+            !seenItems.has(name) &&
             !/^(shipping|handling|tax|subtotal|total|discount|promotion|import)/i.test(name)
           ) {
-            seen.add(name); items.push(name);
+            seenItems.add(name); items.push(name);
           }
         }
       }
-      return items;
+
+      // ── Per-shipment charge amounts ─────────────────────────────────────────
+      // Multi-shipment orders: Amazon charges each shipment separately.
+      // The invoice page has one "Order Total" row per shipment section.
+      const shipmentAmounts = [];
+      const seenAmts = new Set();
+      function addAmt(n) {
+        if (n > 0.5 && n < 10000 && !seenAmts.has(n)) {
+          seenAmts.add(n); shipmentAmounts.push(n);
+        }
+      }
+
+      // Strategy 1: "Order Total" rows — one per shipment section in multi-shipment invoices.
+      for (const cell of doc.querySelectorAll('td, th')) {
+        if (/^order\s+total[:\s]*$/i.test(cell.textContent.trim())) {
+          const row = cell.closest('tr');
+          if (row) {
+            const m = row.textContent.match(/\$([\d,]+\.\d{2})/);
+            if (m) addAmt(parseFloat(m[1].replace(/,/g, '')));
+          }
+        }
+      }
+
+      // Strategy 2: "Grand Total" rows (some invoice layouts use this label).
+      if (shipmentAmounts.length === 0) {
+        for (const cell of doc.querySelectorAll('td, th')) {
+          if (/^grand\s+total[:\s]*$/i.test(cell.textContent.trim())) {
+            const row = cell.closest('tr');
+            if (row) {
+              const m = row.textContent.match(/\$([\d,]+\.\d{2})/);
+              if (m) addAmt(parseFloat(m[1].replace(/,/g, '')));
+            }
+          }
+        }
+      }
+
+      // Strategy 3: Payment card lines e.g. "Visa ending in 1234: $XX.XX".
+      // Each line represents one charge event (one shipment).
+      if (shipmentAmounts.length === 0) {
+        for (const el of doc.querySelectorAll('td, div, p, span')) {
+          const text = el.textContent.trim();
+          if (/visa|mastercard|amex|discover|credit card|debit card|bank card/i.test(text)) {
+            const matches = [...text.matchAll(/\$([\d,]+\.\d{2})/g)];
+            for (const m of matches) addAmt(parseFloat(m[1].replace(/,/g, '')));
+          }
+        }
+      }
+
+      // Strategy 4: Regex scan for any dollar amounts in "Total" labelled rows
+      // as a last resort — covers unusual invoice formats.
+      if (shipmentAmounts.length === 0) {
+        for (const row of doc.querySelectorAll('tr')) {
+          const text = row.textContent;
+          if (/total/i.test(text) && !/subtotal|before tax|handling/i.test(text)) {
+            const m = text.match(/\$([\d,]+\.\d{2})/);
+            if (m) addAmt(parseFloat(m[1].replace(/,/g, '')));
+          }
+        }
+      }
+
+      return { items, shipmentAmounts };
     } catch {
-      return [];
+      return { items: [], shipmentAmounts: [] };
     }
   }
 
@@ -384,11 +452,13 @@ async function scrapeOrderHistoryPage() {
   for (let i = 0; i < allOrders.length; i += BATCH) {
     const batch = allOrders.slice(i, i + BATCH);
     await Promise.all(batch.map(async order => {
-      const invoiceItems = await fetchInvoiceItems(order.orderId);
+      const { items: invoiceItems, shipmentAmounts } = await fetchInvoiceItems(order.orderId);
       if (invoiceItems.length > 0) {
-        // Merge: union of card items and invoice items, invoice taking precedence.
         const merged = [...new Set([...invoiceItems, ...order.items])];
         order.items = merged;
+      }
+      if (shipmentAmounts.length > 0) {
+        order.chargeAmounts = shipmentAmounts;
       }
     }));
     if (i + BATCH < allOrders.length) {
