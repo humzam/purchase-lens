@@ -244,33 +244,53 @@
 
   function buildLabel(matches) {
     const allItems = [...new Set(matches.flatMap(m => m.items))];
-    const displayText = allItems.length > 0
-      ? allItems.join(' · ')
-      : `Order ${matches[0].orderId}`;
-    const tooltip = allItems.join('\n') + `\n\nOrder(s): ${matches.map(m => m.orderId).join(', ')}`;
+    const orderId = matches[0].orderId;
+    const orderUrl = `https://www.amazon.com/gp/your-account/order-details?orderID=${orderId}`;
 
-    const div = document.createElement('div');
-    div.className = 'aci-label';
-    div.title = tooltip;
-    div.style.cssText = `
+    const wrapper = document.createElement('div');
+    wrapper.className = 'aci-label';
+    wrapper.style.cssText = `
       display: block;
       margin-top: 4px;
-      padding: 3px 8px;
+      padding: 5px 8px;
       background: #fffbeb;
       border-left: 3px solid #f59e0b;
       border-radius: 0 3px 3px 0;
       font-size: 12px;
       font-family: inherit;
       color: #78350f;
-      cursor: default;
       max-width: 480px;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
       box-sizing: border-box;
     `;
-    div.textContent = `📦 ${displayText}`;
-    return div;
+
+    const link = document.createElement('a');
+    link.href = orderUrl;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    link.style.cssText = `
+      color: #92400e;
+      font-weight: 600;
+      text-decoration: none;
+      display: block;
+      margin-bottom: ${allItems.length > 0 ? '3px' : '0'};
+    `;
+    link.textContent = `📦 Order ${orderId}`;
+    wrapper.appendChild(link);
+
+    for (const item of allItems) {
+      const row = document.createElement('div');
+      row.title = item;
+      row.style.cssText = `
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        padding-left: 2px;
+      `;
+      row.textContent = `• ${item}`;
+      wrapper.appendChild(row);
+    }
+
+    return wrapper;
   }
 
   function injectLabel(rowEl, label) {

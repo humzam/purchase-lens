@@ -315,15 +315,18 @@ async function scrapeOrderHistoryPage() {
           seen.add(name); items.push(name);
         }
       }
-      // Fallback: table rows where last cell is a price — first cell is the item name.
-      if (items.length === 0) {
-        for (const row of doc.querySelectorAll('tr')) {
-          const cells = [...row.querySelectorAll('td')];
-          if (cells.length >= 2 && /^\$[\d,.]+$/.test(cells[cells.length - 1].textContent.trim())) {
-            const name = cells[0].textContent.trim();
-            if (name.length >= 5 && name.length <= 200 && !seen.has(name)) {
-              seen.add(name); items.push(name);
-            }
+      // Always scan table rows too — some items lack /dp/ links (e.g. consumables, marketplace).
+      for (const row of doc.querySelectorAll('tr')) {
+        const cells = [...row.querySelectorAll('td')];
+        if (cells.length >= 2 && /^\$[\d,.]+$/.test(cells[cells.length - 1].textContent.trim())) {
+          const name = cells[0].textContent.trim().split('\n')[0].trim();
+          if (
+            name.length >= 5 &&
+            name.length <= 200 &&
+            !seen.has(name) &&
+            !/^(shipping|handling|tax|subtotal|total|discount|promotion|import)/i.test(name)
+          ) {
+            seen.add(name); items.push(name);
           }
         }
       }
