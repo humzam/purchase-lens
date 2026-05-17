@@ -124,33 +124,54 @@ async function refreshOrders() {
 
 // ─── Tab-Based Amazon Scraper ─────────────────────────────────────────────────
 
-// Opens a background tab to Amazon order history, waits for it to fully render
-// (JS and all), runs an extraction script, then closes the tab.
-// Returns an array of { orderId, date, items, total, chargeAmounts }.
+// Opens one background tab per page of Amazon order history.
+// Each tab is fully JS-rendered before we scrape, so pagination is reliable
+// regardless of Amazon's server-HTML structure.
 async function fetchOrdersViaTab(minDate, maxDate) {
-  // pageSize=50 covers most users for a 6-month window in one load.
-  const url = `${ORDER_HISTORY_URL}?orderFilter=months-${ORDER_LOOKBACK_MONTHS}&startIndex=0&pageSize=50`;
+  const allRawOrders = [];
+  const SIX_MONTHS_AGO = new Date();
+  SIX_MONTHS_AGO.setMonth(SIX_MONTHS_AGO.getMonth() - 6);
 
-  const html = await loadTabAndExtract(url, scrapeOrderHistoryPage);
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const url = `${ORDER_HISTORY_URL}?orderFilter=months-${ORDER_LOOKBACK_MONTHS}&startIndex=${page * 10}`;
 
-  if (!html || !html.orders) {
-    console.warn('[ACI BG] Tab scrape returned no orders. Page title was:', html?.pageTitle);
-    return [];
+    let result;
+    try {
+      result = await loadTabAndExtract(url, scrapePageWithInvoices);
+    } catch (e) {
+      console.warn('[ACI BG] Page', page + 1, 'failed:', e.message);
+      break;
+    }
+
+    if (!result?.orders?.length) {
+      console.log('[ACI BG] Page', page + 1, 'returned 0 orders — done paginating');
+      break;
+    }
+
+    console.log('[ACI BG] Page', page + 1, ':', result.orders.length, 'orders scraped');
+    allRawOrders.push(...result.orders);
+
+    // Stop when last order on this page predates our window
+    const lastRaw = result.orders[result.orders.length - 1];
+    if (lastRaw?.orderDate) {
+      const d = new Date(lastRaw.orderDate);
+      if (!isNaN(d.getTime()) && d < SIX_MONTHS_AGO) break;
+    }
+
+    // Fewer than 10 orders means this was the last page
+    if (result.orders.length < 10) break;
   }
 
-  // Normalise and filter to the date range.
   const results = [];
-  for (const raw of html.orders) {
+  for (const raw of allRawOrders) {
     const date = tryParseDate(raw.orderDate);
-    if (date && date < minDate) continue;       // too old
-    if (date && date > maxDate) continue;        // too new (shouldn't happen but be safe)
-
+    if (date && date < minDate) continue;
+    if (date && date > maxDate) continue;
     results.push({
       orderId: raw.orderId,
       date: date ? date.toISOString().split('T')[0] : null,
       items: raw.items,
       total: raw.total,
-      // Prefer per-shipment amounts parsed from invoice; fall back to order total.
       chargeAmounts: raw.chargeAmounts?.length > 0
         ? raw.chargeAmounts
         : (raw.total ? [raw.total] : []),
@@ -206,10 +227,9 @@ function loadTabAndExtract(url, scriptFn) {
 
 // ─── In-Page Extraction Script ────────────────────────────────────────────────
 // THIS FUNCTION RUNS INSIDE THE AMAZON TAB — fully self-contained, no external refs.
-// It is async: it paginates Amazon's order history using in-tab fetch() calls,
-// which are fully authenticated because they come from a real Amazon browser tab.
+// It scrapes only the current page (pagination is handled by opening separate tabs).
 
-async function scrapeOrderHistoryPage() {
+async function scrapePageWithInvoices() {
   const CARD_SELECTORS = [
     '.order',
     '[data-order-id]',
@@ -404,8 +424,8 @@ async function scrapeOrderHistoryPage() {
     }
   }
 
-  // ── Page 1: extract from current document ──
-  const allOrders = extractOrdersFromDoc(document);
+  // ── Scrape current page ──
+  const orders = extractOrdersFromDoc(document);
   const firstCardHtml = (() => {
     for (const sel of CARD_SELECTORS) {
       const el = document.querySelector(sel);
@@ -414,61 +434,27 @@ async function scrapeOrderHistoryPage() {
     return null;
   })();
 
-  // ── Pages 2+: paginate with in-tab fetch ──
-  const SIX_MONTHS_AGO = new Date();
-  SIX_MONTHS_AGO.setMonth(SIX_MONTHS_AGO.getMonth() - 6);
-
-  for (let page = 1; page < MAX_PAGES; page++) {
-    const startIndex = page * 10;
-    let html;
-    try {
-      const res = await fetch(
-        `/gp/css/order-history?orderFilter=months-6&startIndex=${startIndex}`,
-        { credentials: 'include' }
-      );
-      html = await res.text();
-    } catch {
-      break;
-    }
-
-    const doc = new DOMParser().parseFromString(html, 'text/html');
-    const pageOrders = extractOrdersFromDoc(doc);
-    if (pageOrders.length === 0) break;
-
-    allOrders.push(...pageOrders);
-
-    const lastDate = pageOrders[pageOrders.length - 1]?.orderDate;
-    if (lastDate) {
-      const d = new Date(lastDate);
-      if (!isNaN(d) && d < SIX_MONTHS_AGO) break;
-    }
-
-    await new Promise(r => setTimeout(r, 250));
-  }
-
-  // ── Invoice fetch: get complete item lists for every order ──
-  // Run in small parallel batches so we don't open too many concurrent requests.
+  // ── Invoice fetch: complete item lists + per-shipment amounts ──
   const BATCH = 5;
-  for (let i = 0; i < allOrders.length; i += BATCH) {
-    const batch = allOrders.slice(i, i + BATCH);
+  for (let i = 0; i < orders.length; i += BATCH) {
+    const batch = orders.slice(i, i + BATCH);
     await Promise.all(batch.map(async order => {
       const { items: invoiceItems, shipmentAmounts } = await fetchInvoiceItems(order.orderId);
       if (invoiceItems.length > 0) {
-        const merged = [...new Set([...invoiceItems, ...order.items])];
-        order.items = merged;
+        order.items = [...new Set([...invoiceItems, ...order.items])];
       }
       if (shipmentAmounts.length > 0) {
         order.chargeAmounts = shipmentAmounts;
       }
     }));
-    if (i + BATCH < allOrders.length) {
+    if (i + BATCH < orders.length) {
       await new Promise(r => setTimeout(r, 200));
     }
   }
 
   return {
-    orders: allOrders,
-    cardCount: allOrders.length,
+    orders,
+    cardCount: orders.length,
     pageTitle: document.title,
     url: window.location.href,
     firstCardHtml,
@@ -518,12 +504,46 @@ async function getStatus() {
 
 async function debugScrape() {
   try {
-    // Use the same URL as production so we see the same data.
-    const result = await loadTabAndExtract(
-      `${ORDER_HISTORY_URL}?orderFilter=months-${ORDER_LOOKBACK_MONTHS}&startIndex=0&pageSize=50`,
-      scrapeOrderHistoryPage
-    );
-    return { success: true, result };
+    // Run the full multi-page scrape and aggregate results for display.
+    const allOrders = [];
+    let firstCardHtml = null;
+    let pageTitle = '';
+    let url = '';
+    const SIX_MONTHS_AGO = new Date();
+    SIX_MONTHS_AGO.setMonth(SIX_MONTHS_AGO.getMonth() - 6);
+
+    for (let page = 0; page < MAX_PAGES; page++) {
+      const pageUrl = `${ORDER_HISTORY_URL}?orderFilter=months-${ORDER_LOOKBACK_MONTHS}&startIndex=${page * 10}`;
+      const result = await loadTabAndExtract(pageUrl, scrapePageWithInvoices);
+
+      if (!result?.orders?.length) break;
+
+      if (page === 0) {
+        firstCardHtml = result.firstCardHtml;
+        pageTitle = result.pageTitle;
+        url = result.url;
+      }
+
+      allOrders.push(...result.orders);
+
+      const lastRaw = result.orders[result.orders.length - 1];
+      if (lastRaw?.orderDate) {
+        const d = new Date(lastRaw.orderDate);
+        if (!isNaN(d.getTime()) && d < SIX_MONTHS_AGO) break;
+      }
+      if (result.orders.length < 10) break;
+    }
+
+    return {
+      success: true,
+      result: {
+        orders: allOrders,
+        cardCount: allOrders.length,
+        pageTitle,
+        url,
+        firstCardHtml,
+      },
+    };
   } catch (e) {
     return { success: false, error: e.message };
   }
