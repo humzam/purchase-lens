@@ -1,0 +1,46 @@
+{
+  "manifest_version": 3,
+  "name": "Amazon Charge Identifier",
+  "version": "1.0",
+  "description": "Annotates Amazon charges on Bank of America statements with actual item names.",
+  "permissions": ["storage", "alarms", "tabs", "scripting"],
+  "host_permissions": [
+    "*://*.amazon.com/*",
+    "*://*.bankofamerica.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["*://*.bankofamerica.com/*"],
+      "js": ["content_bofa.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["*://*.amazon.com/*"],
+      "js": ["content_amazon.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Amazon Charge Identifier",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["debug.html"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}

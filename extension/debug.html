@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>ACI Debug</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: monospace; font-size: 13px; padding: 20px; background: #1e1e1e; color: #d4d4d4; }
+    h1 { font-size: 16px; margin-bottom: 16px; color: #9cdcfe; }
+    .section { margin-bottom: 24px; }
+    .section-title { color: #4ec9b0; font-size: 14px; margin-bottom: 8px; border-bottom: 1px solid #333; padding-bottom: 4px; }
+    .url-block { margin-bottom: 20px; padding: 12px; background: #252526; border-radius: 4px; border-left: 3px solid #569cd6; }
+    .url-label { color: #ce9178; margin-bottom: 8px; word-break: break-all; }
+    .field { margin: 4px 0; }
+    .key { color: #9cdcfe; }
+    .val { color: #ce9178; }
+    .val.good { color: #4ec9b0; }
+    .val.bad  { color: #f44747; }
+    .snippet { background: #0d0d0d; padding: 10px; border-radius: 3px; white-space: pre-wrap; word-break: break-all; color: #dcdcaa; margin-top: 6px; font-size: 11px; max-height: 200px; overflow-y: auto; }
+    #status { color: #dcdcaa; margin-bottom: 12px; }
+    button { background: #0e639c; color: #fff; border: none; padding: 6px 14px; border-radius: 3px; cursor: pointer; font-size: 13px; margin-bottom: 16px; }
+    button:hover { background: #1177bb; }
+  </style>
+</head>
+<body>
+  <h1>Amazon Charge Identifier — Scrape Debugger</h1>
+  <div id="status">Running tests…</div>
+  <button id="rerun">Re-run</button>
+  <div id="output"></div>
+
+  <script src="debug.js"></script>
+</body>
+</html>
