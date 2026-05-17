@@ -398,7 +398,10 @@ async function scrapePageWithInvoices() {
           seenItems.add(name); items.push(name);
         }
       }
-      // Always scan table rows too — some items lack /dp/ links.
+      // Scan table rows for items that lack /dp/ links (e.g. some consumables).
+      // Skip candidates whose first two words already match an existing item —
+      // this prevents the same product appearing twice when Amazon uses slightly
+      // different title text in the invoice table vs the product-page link.
       for (const row of doc.querySelectorAll('tr')) {
         const cells = [...row.querySelectorAll('td')];
         if (cells.length >= 2 && /^\$[\d,.]+$/.test(cells[cells.length - 1].textContent.trim())) {
@@ -409,7 +412,11 @@ async function scrapePageWithInvoices() {
             !seenItems.has(name) &&
             !/^(shipping|handling|tax|subtotal|total|discount|promotion|import)/i.test(name)
           ) {
-            seenItems.add(name); items.push(name);
+            const twoWordPrefix = name.split(/\s+/).slice(0, 2).join(' ').toLowerCase();
+            const alreadyCovered = items.some(
+              existing => existing.split(/\s+/).slice(0, 2).join(' ').toLowerCase() === twoWordPrefix
+            );
+            if (!alreadyCovered) { seenItems.add(name); items.push(name); }
           }
         }
       }
