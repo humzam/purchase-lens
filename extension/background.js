@@ -274,11 +274,18 @@ async function scrapeOrderHistoryPage() {
         if (amounts.length === 1) total = amounts[0];
       }
 
-      // ── Item names ──
+      // ── Item names (best-effort from order card) ──
+      // We also fetch the invoice page below for a complete list, but grab what
+      // we can here so orders with no invoice response still have something.
       const items = [];
       const seen = new Set();
       for (const link of card.querySelectorAll('a[href*="/dp/"], a[href*="/gp/product/"]')) {
-        const name = link.textContent.trim();
+        let name = link.textContent.trim();
+        // Many item links wrap only a thumbnail <img> — fall back to alt text.
+        if (!name || name.length < 5) {
+          const img = link.querySelector('img');
+          name = (img?.alt || img?.title || '').trim();
+        }
         if (name.length >= 5 && name.length <= 200 && !seen.has(name)) {
           seen.add(name); items.push(name);
         }
@@ -287,6 +294,43 @@ async function scrapeOrderHistoryPage() {
       orders.push({ orderId, orderDate, total, items });
     }
     return orders;
+  }
+
+  // Helper: fetch the print invoice for one order and return all item names found.
+  // Invoice pages list every item regardless of how many shipments there were.
+  async function fetchInvoiceItems(orderId) {
+    try {
+      const res = await fetch(
+        `/gp/css/summary/print.html?ie=UTF8&orderID=${orderId}`,
+        { credentials: 'include' }
+      );
+      if (!res.ok) return [];
+      const html = await res.text();
+      const doc = new DOMParser().parseFromString(html, 'text/html');
+      const items = [];
+      const seen = new Set();
+      for (const link of doc.querySelectorAll('a[href*="/dp/"], a[href*="/gp/product/"]')) {
+        const name = link.textContent.trim();
+        if (name.length >= 5 && name.length <= 200 && !seen.has(name)) {
+          seen.add(name); items.push(name);
+        }
+      }
+      // Fallback: table rows where last cell is a price — first cell is the item name.
+      if (items.length === 0) {
+        for (const row of doc.querySelectorAll('tr')) {
+          const cells = [...row.querySelectorAll('td')];
+          if (cells.length >= 2 && /^\$[\d,.]+$/.test(cells[cells.length - 1].textContent.trim())) {
+            const name = cells[0].textContent.trim();
+            if (name.length >= 5 && name.length <= 200 && !seen.has(name)) {
+              seen.add(name); items.push(name);
+            }
+          }
+        }
+      }
+      return items;
+    } catch {
+      return [];
+    }
   }
 
   // ── Page 1: extract from current document ──
@@ -299,7 +343,7 @@ async function scrapeOrderHistoryPage() {
     return null;
   })();
 
-  // ── Pages 2+: paginate with in-tab fetch (authenticated, not bot-flagged) ──
+  // ── Pages 2+: paginate with in-tab fetch ──
   const SIX_MONTHS_AGO = new Date();
   SIX_MONTHS_AGO.setMonth(SIX_MONTHS_AGO.getMonth() - 6);
 
@@ -322,14 +366,31 @@ async function scrapeOrderHistoryPage() {
 
     allOrders.push(...pageOrders);
 
-    // Stop once we've gone back far enough.
     const lastDate = pageOrders[pageOrders.length - 1]?.orderDate;
     if (lastDate) {
       const d = new Date(lastDate);
       if (!isNaN(d) && d < SIX_MONTHS_AGO) break;
     }
 
-    await new Promise(r => setTimeout(r, 250)); // be polite
+    await new Promise(r => setTimeout(r, 250));
+  }
+
+  // ── Invoice fetch: get complete item lists for every order ──
+  // Run in small parallel batches so we don't open too many concurrent requests.
+  const BATCH = 5;
+  for (let i = 0; i < allOrders.length; i += BATCH) {
+    const batch = allOrders.slice(i, i + BATCH);
+    await Promise.all(batch.map(async order => {
+      const invoiceItems = await fetchInvoiceItems(order.orderId);
+      if (invoiceItems.length > 0) {
+        // Merge: union of card items and invoice items, invoice taking precedence.
+        const merged = [...new Set([...invoiceItems, ...order.items])];
+        order.items = merged;
+      }
+    }));
+    if (i + BATCH < allOrders.length) {
+      await new Promise(r => setTimeout(r, 200));
+    }
   }
 
   return {
