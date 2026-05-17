@@ -7,6 +7,7 @@ const ORDER_HISTORY_URL = 'https://www.amazon.com/gp/css/order-history';
 const DATE_WINDOW_DAYS = 5;
 const ORDER_LOOKBACK_MONTHS = 6;
 const TAB_LOAD_TIMEOUT_MS = 30000;
+const MAX_PAGES = 20;
 
 // Prevents multiple concurrent scrapes from opening multiple Amazon tabs.
 let scrapeInProgress = false;
@@ -124,42 +125,70 @@ async function refreshOrders() {
 
 // ─── Tab-Based Amazon Scraper ─────────────────────────────────────────────────
 
-// Opens one background tab per page of Amazon order history.
-// Each tab is fully JS-rendered before we scrape, so pagination is reliable
-// regardless of Amazon's server-HTML structure.
+// Opens ONE background tab, navigates it through each page of order history,
+// and closes it when done. Each page is fully JS-rendered before we scrape.
 async function fetchOrdersViaTab(minDate, maxDate) {
   const allRawOrders = [];
   const SIX_MONTHS_AGO = new Date();
   SIX_MONTHS_AGO.setMonth(SIX_MONTHS_AGO.getMonth() - 6);
 
-  for (let page = 0; page < MAX_PAGES; page++) {
-    const url = `${ORDER_HISTORY_URL}?orderFilter=months-${ORDER_LOOKBACK_MONTHS}&startIndex=${page * 10}`;
+  const firstUrl = `${ORDER_HISTORY_URL}?orderFilter=months-${ORDER_LOOKBACK_MONTHS}&startIndex=0`;
+  let tabId;
 
-    let result;
-    try {
-      result = await loadTabAndExtract(url, scrapePageWithInvoices);
-    } catch (e) {
-      console.warn('[ACI BG] Page', page + 1, 'failed:', e.message);
-      break;
+  // Create the tab and wait for the first page to finish loading.
+  await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('Tab load timeout')), TAB_LOAD_TIMEOUT_MS);
+    chrome.tabs.create({ url: firstUrl, active: false }, tab => {
+      if (chrome.runtime.lastError) {
+        clearTimeout(timer);
+        return reject(new Error(chrome.runtime.lastError.message));
+      }
+      tabId = tab.id;
+      function onUpdated(id, info) {
+        if (id !== tabId || info.status !== 'complete') return;
+        chrome.tabs.onUpdated.removeListener(onUpdated);
+        clearTimeout(timer);
+        resolve();
+      }
+      chrome.tabs.onUpdated.addListener(onUpdated);
+    });
+  });
+
+  try {
+    for (let page = 0; page < MAX_PAGES; page++) {
+      if (page > 0) {
+        const nextUrl = `${ORDER_HISTORY_URL}?orderFilter=months-${ORDER_LOOKBACK_MONTHS}&startIndex=${page * 10}`;
+        await navigateTabAndWait(tabId, nextUrl);
+      }
+
+      // Let JS fully render before injecting.
+      await new Promise(r => setTimeout(r, 2000));
+
+      const result = await new Promise((resolve, reject) => {
+        chrome.scripting.executeScript({ target: { tabId }, func: scrapePageWithInvoices }, res => {
+          if (chrome.runtime.lastError) return reject(new Error(chrome.runtime.lastError.message));
+          if (!res?.length || res[0].error) return reject(new Error('Script execution failed'));
+          resolve(res[0].result);
+        });
+      });
+
+      if (!result?.orders?.length) {
+        console.log('[ACI BG] Page', page + 1, ': 0 orders — done paginating');
+        break;
+      }
+
+      console.log('[ACI BG] Page', page + 1, ':', result.orders.length, 'orders scraped');
+      allRawOrders.push(...result.orders);
+
+      const lastRaw = result.orders[result.orders.length - 1];
+      if (lastRaw?.orderDate) {
+        const d = new Date(lastRaw.orderDate);
+        if (!isNaN(d.getTime()) && d < SIX_MONTHS_AGO) break;
+      }
+      if (result.orders.length < 10) break;
     }
-
-    if (!result?.orders?.length) {
-      console.log('[ACI BG] Page', page + 1, 'returned 0 orders — done paginating');
-      break;
-    }
-
-    console.log('[ACI BG] Page', page + 1, ':', result.orders.length, 'orders scraped');
-    allRawOrders.push(...result.orders);
-
-    // Stop when last order on this page predates our window
-    const lastRaw = result.orders[result.orders.length - 1];
-    if (lastRaw?.orderDate) {
-      const d = new Date(lastRaw.orderDate);
-      if (!isNaN(d.getTime()) && d < SIX_MONTHS_AGO) break;
-    }
-
-    // Fewer than 10 orders means this was the last page
-    if (result.orders.length < 10) break;
+  } finally {
+    chrome.tabs.remove(tabId, () => {});
   }
 
   const results = [];
@@ -179,6 +208,32 @@ async function fetchOrdersViaTab(minDate, maxDate) {
   }
 
   return results;
+}
+
+// Navigates a tab to `url` and resolves when it reaches status='complete'.
+// Listener is registered BEFORE chrome.tabs.update to avoid the race where
+// the navigation completes before we start listening.
+function navigateTabAndWait(tabId, url) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      chrome.tabs.onUpdated.removeListener(onUpdated);
+      reject(new Error('Navigation timeout'));
+    }, TAB_LOAD_TIMEOUT_MS);
+
+    let seenLoading = false;
+    function onUpdated(id, info) {
+      if (id !== tabId) return;
+      if (info.status === 'loading') seenLoading = true;
+      if (seenLoading && info.status === 'complete') {
+        chrome.tabs.onUpdated.removeListener(onUpdated);
+        clearTimeout(timer);
+        resolve();
+      }
+    }
+
+    chrome.tabs.onUpdated.addListener(onUpdated);
+    chrome.tabs.update(tabId, { url });
+  });
 }
 
 // Opens a tab, waits for it to reach status=complete, runs `scriptFn` inside it,
@@ -504,45 +559,67 @@ async function getStatus() {
 
 async function debugScrape() {
   try {
-    // Run the full multi-page scrape and aggregate results for display.
+    // Reuse fetchOrdersViaTab's single-tab approach but return raw order data
+    // (not date-filtered) so the debug page can show everything scraped.
     const allOrders = [];
     let firstCardHtml = null;
     let pageTitle = '';
-    let url = '';
+    let finalUrl = '';
     const SIX_MONTHS_AGO = new Date();
     SIX_MONTHS_AGO.setMonth(SIX_MONTHS_AGO.getMonth() - 6);
 
-    for (let page = 0; page < MAX_PAGES; page++) {
-      const pageUrl = `${ORDER_HISTORY_URL}?orderFilter=months-${ORDER_LOOKBACK_MONTHS}&startIndex=${page * 10}`;
-      const result = await loadTabAndExtract(pageUrl, scrapePageWithInvoices);
+    const firstUrl = `${ORDER_HISTORY_URL}?orderFilter=months-${ORDER_LOOKBACK_MONTHS}&startIndex=0`;
+    let tabId;
 
-      if (!result?.orders?.length) break;
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('Tab load timeout')), TAB_LOAD_TIMEOUT_MS);
+      chrome.tabs.create({ url: firstUrl, active: false }, tab => {
+        if (chrome.runtime.lastError) { clearTimeout(timer); return reject(new Error(chrome.runtime.lastError.message)); }
+        tabId = tab.id;
+        function onUpdated(id, info) {
+          if (id !== tabId || info.status !== 'complete') return;
+          chrome.tabs.onUpdated.removeListener(onUpdated);
+          clearTimeout(timer);
+          resolve();
+        }
+        chrome.tabs.onUpdated.addListener(onUpdated);
+      });
+    });
 
-      if (page === 0) {
-        firstCardHtml = result.firstCardHtml;
-        pageTitle = result.pageTitle;
-        url = result.url;
+    try {
+      for (let page = 0; page < MAX_PAGES; page++) {
+        if (page > 0) {
+          const nextUrl = `${ORDER_HISTORY_URL}?orderFilter=months-${ORDER_LOOKBACK_MONTHS}&startIndex=${page * 10}`;
+          await navigateTabAndWait(tabId, nextUrl);
+        }
+        await new Promise(r => setTimeout(r, 2000));
+
+        const result = await new Promise((resolve, reject) => {
+          chrome.scripting.executeScript({ target: { tabId }, func: scrapePageWithInvoices }, res => {
+            if (chrome.runtime.lastError) return reject(new Error(chrome.runtime.lastError.message));
+            if (!res?.length || res[0].error) return reject(new Error('Script execution failed'));
+            resolve(res[0].result);
+          });
+        });
+
+        if (!result?.orders?.length) break;
+        if (page === 0) { firstCardHtml = result.firstCardHtml; pageTitle = result.pageTitle; finalUrl = result.url; }
+        allOrders.push(...result.orders);
+
+        const lastRaw = result.orders[result.orders.length - 1];
+        if (lastRaw?.orderDate) {
+          const d = new Date(lastRaw.orderDate);
+          if (!isNaN(d.getTime()) && d < SIX_MONTHS_AGO) break;
+        }
+        if (result.orders.length < 10) break;
       }
-
-      allOrders.push(...result.orders);
-
-      const lastRaw = result.orders[result.orders.length - 1];
-      if (lastRaw?.orderDate) {
-        const d = new Date(lastRaw.orderDate);
-        if (!isNaN(d.getTime()) && d < SIX_MONTHS_AGO) break;
-      }
-      if (result.orders.length < 10) break;
+    } finally {
+      chrome.tabs.remove(tabId, () => {});
     }
 
     return {
       success: true,
-      result: {
-        orders: allOrders,
-        cardCount: allOrders.length,
-        pageTitle,
-        url,
-        firstCardHtml,
-      },
+      result: { orders: allOrders, cardCount: allOrders.length, pageTitle, url: finalUrl, firstCardHtml },
     };
   } catch (e) {
     return { success: false, error: e.message };
