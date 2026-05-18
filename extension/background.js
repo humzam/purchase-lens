@@ -5,12 +5,42 @@
 
 const ORDER_HISTORY_URL = 'https://www.amazon.com/gp/css/order-history';
 const DATE_WINDOW_DAYS = 5;
-const ORDER_LOOKBACK_MONTHS = 2;
+const ORDER_LOOKBACK_MONTHS = 3;
 const TAB_LOAD_TIMEOUT_MS = 30000;
 const MAX_PAGES = 20;
+const CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
 
-// Prevents multiple concurrent scrapes from opening multiple Amazon tabs.
+// Prevents concurrent scrapes. Callers that arrive while a scrape is running
+// can await scrapePromise to block until the orders are stored.
 let scrapeInProgress = false;
+let scrapePromise = null;
+
+// ─── Proactive Prefetch ───────────────────────────────────────────────────────
+// Start loading Amazon orders as soon as the user lands on any BofA page so
+// orders are cached before they navigate to the transactions view.
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo.status !== 'complete') return;
+  if (!tab.url?.includes('bankofamerica.com')) return;
+  prefetchOrders().catch(console.error);
+});
+
+async function prefetchOrders() {
+  const { lastFetched } = await chrome.storage.local.get('lastFetched');
+  if (lastFetched && Date.now() - lastFetched < CACHE_TTL_MS) {
+    console.log('[ACI BG] Prefetch skipped — cache is fresh.');
+    return;
+  }
+  if (scrapeInProgress) return;
+
+  const minDate = new Date();
+  minDate.setMonth(minDate.getMonth() - ORDER_LOOKBACK_MONTHS);
+  const maxDate = new Date();
+  maxDate.setDate(maxDate.getDate() + DATE_WINDOW_DAYS);
+
+  console.log('[ACI BG] Proactive prefetch triggered by BofA navigation.');
+  await ensureOrdersLoaded(minDate, maxDate);
+}
 
 // ─── Message Router ───────────────────────────────────────────────────────────
 
@@ -70,41 +100,50 @@ async function handleMatchCharges(charges) {
 // ─── Order Loading ────────────────────────────────────────────────────────────
 
 async function ensureOrdersLoaded(minDate, maxDate) {
-  const { fetchedOrderIds = [], orders = [] } = await chrome.storage.local.get([
-    'fetchedOrderIds',
-    'orders',
-  ]);
+  const { lastFetched } = await chrome.storage.local.get('lastFetched');
+
+  if (lastFetched && Date.now() - lastFetched < CACHE_TTL_MS) {
+    console.log('[ACI BG] Using cached orders (fetched', Math.round((Date.now() - lastFetched) / 60000), 'min ago).');
+    return;
+  }
+
+  // If a scrape is already running (e.g. triggered by the proactive prefetch),
+  // wait for it to finish rather than returning immediately with an empty cache.
+  if (scrapeInProgress) {
+    console.log('[ACI BG] Scrape in progress — waiting for it to complete.');
+    if (scrapePromise) await scrapePromise;
+    return;
+  }
 
   console.log('[ACI BG] Fetching orders between', minDate.toDateString(), 'and', maxDate.toDateString());
 
-  if (scrapeInProgress) {
-    console.log('[ACI BG] Scrape already in progress — skipping duplicate request.');
-    return;
-  }
-
   scrapeInProgress = true;
-  let scraped;
-  try {
-    scraped = await fetchOrdersViaTab(minDate, maxDate);
-  } catch (e) {
-    console.warn('[ACI BG] Tab scrape failed:', e.message);
-    return;
-  } finally {
-    scrapeInProgress = false;
-  }
+  scrapePromise = (async () => {
+    try {
+      const scraped = await fetchOrdersViaTab(minDate, maxDate);
+      console.log('[ACI BG] Scraped', scraped.length, 'order(s) from Amazon');
 
-  console.log('[ACI BG] Scraped', scraped.length, 'order(s) from Amazon');
+      const { fetchedOrderIds = [], orders = [] } = await chrome.storage.local.get([
+        'fetchedOrderIds', 'orders',
+      ]);
+      const newOrders = scraped.filter(o => !fetchedOrderIds.includes(o.orderId));
 
-  const newOrders = scraped.filter(o => !fetchedOrderIds.includes(o.orderId));
-  if (newOrders.length === 0) return;
+      await chrome.storage.local.set({
+        orders: dedup([...orders, ...newOrders], 'orderId'),
+        fetchedOrderIds: [...new Set([...fetchedOrderIds, ...scraped.map(o => o.orderId)])],
+        lastFetched: Date.now(),
+      });
 
-  await chrome.storage.local.set({
-    orders: dedup([...orders, ...newOrders], 'orderId'),
-    fetchedOrderIds: [...new Set([...fetchedOrderIds, ...scraped.map(o => o.orderId)])],
-    lastFetched: Date.now(),
-  });
+      console.log('[ACI BG] Stored', newOrders.length, 'new order(s)');
+    } catch (e) {
+      console.warn('[ACI BG] Tab scrape failed:', e.message);
+    } finally {
+      scrapeInProgress = false;
+      scrapePromise = null;
+    }
+  })();
 
-  console.log('[ACI BG] Stored', newOrders.length, 'new order(s)');
+  await scrapePromise;
 }
 
 async function refreshOrders() {
@@ -119,6 +158,7 @@ async function refreshOrders() {
   await chrome.storage.local.set({
     fetchedOrderIds: fetchedOrderIds.filter(id => !staleIds.includes(id)),
     orders: orders.filter(o => !staleIds.includes(o.orderId)),
+    lastFetched: null,
   });
   console.log('[ACI BG] Cleared', staleIds.length, 'recent order(s) for refresh.');
 }
@@ -301,16 +341,18 @@ async function scrapePageWithInvoices() {
     );
   }
 
-  // True if 'name' shares ≥60% of its significant words with any item in 'pool'.
-  // Uses the candidate's word count as denominator so that long verbose Amazon
-  // titles (with ingredient lists etc.) don't skew the ratio.
+  // True if 'name' and any item in 'pool' share ≥60% of the shorter title's words.
+  // Using Math.min as the denominator makes the check symmetric and robust to
+  // Amazon listings that add extra words (USDA, supply size, age range) vs another
+  // listing for the same product that omits those words.
   function isCoveredBy(name, pool) {
     const wn = sigWords(name);
     if (wn.size === 0) return false;
     return pool.some(existing => {
       const we = sigWords(existing);
+      if (we.size === 0) return false;
       const shared = [...wn].filter(w => we.has(w)).length;
-      return shared / wn.size >= 0.6;
+      return shared / Math.min(wn.size, we.size) >= 0.6;
     });
   }
 
