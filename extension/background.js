@@ -389,19 +389,39 @@ async function scrapePageWithInvoices() {
       const doc = new DOMParser().parseFromString(html, 'text/html');
 
       // ── Item names ──────────────────────────────────────────────────────────
-      const items = [];
-      const seenItems = new Set();
-
+      // Phase 1: collect items that have a real product-page /dp/ link.
+      // These are the canonical names and are always trusted.
+      const dpItems = [];
+      const seenDp = new Set();
       for (const link of doc.querySelectorAll('a[href*="/dp/"], a[href*="/gp/product/"]')) {
         const name = link.textContent.trim();
-        if (name.length >= 5 && name.length <= 200 && !seenItems.has(name)) {
-          seenItems.add(name); items.push(name);
+        if (name.length >= 5 && name.length <= 200 && !seenDp.has(name)) {
+          seenDp.add(name); dpItems.push(name);
         }
       }
-      // Scan table rows for items that lack /dp/ links (e.g. some consumables).
-      // Skip candidates whose first two words already match an existing item —
-      // this prevents the same product appearing twice when Amazon uses slightly
-      // different title text in the invoice table vs the product-page link.
+
+      // Phase 2: scan table rows for items that have no /dp/ link (e.g. some
+      // consumables, marketplace items). Skip any row whose significant words
+      // overlap ≥50% with an already-found dp-link item — Amazon sometimes uses
+      // a different title in the invoice table vs the product page for the same
+      // physical item, and this suppresses those near-duplicates.
+      function sigWords(s) {
+        return new Set(
+          s.toLowerCase().replace(/[|[\]]/g, ' ').split(/\W+/)
+            .filter(w => w.length > 3 && !/^\d+$/.test(w))
+        );
+      }
+      function isSimilarToDpItem(name) {
+        const wn = sigWords(name);
+        return dpItems.some(existing => {
+          const we = sigWords(existing);
+          const shared = [...wn].filter(w => we.has(w)).length;
+          return shared / Math.max(wn.size, we.size) >= 0.5;
+        });
+      }
+
+      const tableItems = [];
+      const seenTable = new Set(seenDp);
       for (const row of doc.querySelectorAll('tr')) {
         const cells = [...row.querySelectorAll('td')];
         if (cells.length >= 2 && /^\$[\d,.]+$/.test(cells[cells.length - 1].textContent.trim())) {
@@ -409,17 +429,16 @@ async function scrapePageWithInvoices() {
           if (
             name.length >= 5 &&
             name.length <= 200 &&
-            !seenItems.has(name) &&
-            !/^(shipping|handling|tax|subtotal|total|discount|promotion|import)/i.test(name)
+            !seenTable.has(name) &&
+            !/^(shipping|handling|tax|subtotal|total|discount|promotion|import)/i.test(name) &&
+            !isSimilarToDpItem(name)
           ) {
-            const twoWordPrefix = name.split(/\s+/).slice(0, 2).join(' ').toLowerCase();
-            const alreadyCovered = items.some(
-              existing => existing.split(/\s+/).slice(0, 2).join(' ').toLowerCase() === twoWordPrefix
-            );
-            if (!alreadyCovered) { seenItems.add(name); items.push(name); }
+            seenTable.add(name); tableItems.push(name);
           }
         }
       }
+
+      const items = [...dpItems, ...tableItems];
 
       // ── Per-shipment charge amounts ─────────────────────────────────────────
       // Multi-shipment orders: Amazon charges each shipment separately.
