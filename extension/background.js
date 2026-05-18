@@ -413,10 +413,14 @@ async function scrapePageWithInvoices() {
       }
       function isSimilarToDpItem(name) {
         const wn = sigWords(name);
+        if (wn.size === 0) return false;
         return dpItems.some(existing => {
           const we = sigWords(existing);
           const shared = [...wn].filter(w => we.has(w)).length;
-          return shared / Math.max(wn.size, we.size) >= 0.5;
+          // Use candidate's word count as denominator: "is this table-row item
+          // mostly covered by an existing dp-link item?" A long dp-link title
+          // (with vitamins lists etc.) would skew Jaccard too low otherwise.
+          return shared / wn.size >= 0.5;
         });
       }
 
