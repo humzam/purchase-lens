@@ -293,6 +293,27 @@ async function scrapePageWithInvoices() {
   ];
   const MAX_PAGES = 20; // safety cap — 20 pages × 10 orders = 200 orders max
 
+  // Significant words: length > 3, non-numeric — used for near-duplicate detection.
+  function sigWords(s) {
+    return new Set(
+      s.toLowerCase().replace(/[|[\]]/g, ' ').split(/\W+/)
+        .filter(w => w.length > 3 && !/^\d+$/.test(w))
+    );
+  }
+
+  // True if 'name' shares ≥60% of its significant words with any item in 'pool'.
+  // Uses the candidate's word count as denominator so that long verbose Amazon
+  // titles (with ingredient lists etc.) don't skew the ratio.
+  function isCoveredBy(name, pool) {
+    const wn = sigWords(name);
+    if (wn.size === 0) return false;
+    return pool.some(existing => {
+      const we = sigWords(existing);
+      const shared = [...wn].filter(w => we.has(w)).length;
+      return shared / wn.size >= 0.6;
+    });
+  }
+
   function extractOrdersFromDoc(doc) {
     const orders = [];
     let cards = [];
@@ -389,8 +410,7 @@ async function scrapePageWithInvoices() {
       const doc = new DOMParser().parseFromString(html, 'text/html');
 
       // ── Item names ──────────────────────────────────────────────────────────
-      // Phase 1: collect items that have a real product-page /dp/ link.
-      // These are the canonical names and are always trusted.
+      // Phase 1: items with a real /dp/ product-page link — always trusted.
       const dpItems = [];
       const seenDp = new Set();
       for (const link of doc.querySelectorAll('a[href*="/dp/"], a[href*="/gp/product/"]')) {
@@ -400,30 +420,8 @@ async function scrapePageWithInvoices() {
         }
       }
 
-      // Phase 2: scan table rows for items that have no /dp/ link (e.g. some
-      // consumables, marketplace items). Skip any row whose significant words
-      // overlap ≥50% with an already-found dp-link item — Amazon sometimes uses
-      // a different title in the invoice table vs the product page for the same
-      // physical item, and this suppresses those near-duplicates.
-      function sigWords(s) {
-        return new Set(
-          s.toLowerCase().replace(/[|[\]]/g, ' ').split(/\W+/)
-            .filter(w => w.length > 3 && !/^\d+$/.test(w))
-        );
-      }
-      function isSimilarToDpItem(name) {
-        const wn = sigWords(name);
-        if (wn.size === 0) return false;
-        return dpItems.some(existing => {
-          const we = sigWords(existing);
-          const shared = [...wn].filter(w => we.has(w)).length;
-          // Use candidate's word count as denominator: "is this table-row item
-          // mostly covered by an existing dp-link item?" A long dp-link title
-          // (with vitamins lists etc.) would skew Jaccard too low otherwise.
-          return shared / wn.size >= 0.5;
-        });
-      }
-
+      // Phase 2: table-row items for products that have no /dp/ link.
+      // Drop any candidate covered by a dp-link item (same product, different text).
       const tableItems = [];
       const seenTable = new Set(seenDp);
       for (const row of doc.querySelectorAll('tr')) {
@@ -435,7 +433,7 @@ async function scrapePageWithInvoices() {
             name.length <= 200 &&
             !seenTable.has(name) &&
             !/^(shipping|handling|tax|subtotal|total|discount|promotion|import)/i.test(name) &&
-            !isSimilarToDpItem(name)
+            !isCoveredBy(name, dpItems)
           ) {
             seenTable.add(name); tableItems.push(name);
           }
@@ -526,7 +524,10 @@ async function scrapePageWithInvoices() {
     await Promise.all(batch.map(async order => {
       const { items: invoiceItems, shipmentAmounts } = await fetchInvoiceItems(order.orderId);
       if (invoiceItems.length > 0) {
-        order.items = [...new Set([...invoiceItems, ...order.items])];
+        // Drop order-card items covered by invoice items — the order history card
+        // and the invoice often use different title text for the same product.
+        const uniqueCardItems = order.items.filter(ci => !isCoveredBy(ci, invoiceItems));
+        order.items = [...new Set([...invoiceItems, ...uniqueCardItems])];
       }
       if (shipmentAmounts.length > 0) {
         order.chargeAmounts = shipmentAmounts;
