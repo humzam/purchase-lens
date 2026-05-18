@@ -5,7 +5,7 @@
 
 const ORDER_HISTORY_URL = 'https://www.amazon.com/gp/css/order-history';
 const DATE_WINDOW_DAYS = 5;
-const ORDER_LOOKBACK_MONTHS = 6;
+const ORDER_LOOKBACK_MONTHS = 2;
 const TAB_LOAD_TIMEOUT_MS = 30000;
 const MAX_PAGES = 20;
 
