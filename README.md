@@ -2,6 +2,8 @@
 
 A Chrome extension that annotates Amazon charges on Bank of America bank statements with the actual item names you purchased.
 
+![Purchase Lens in action](screenshots/demo.png)
+
 ## The Problem
 
 Bank statements show Amazon charges as generic entries like `AMAZON MARKETPLA DES:INTERNET` with no description. Amazon also splits single orders into multiple shipments, making reconciliation impossible from the statement alone.
@@ -39,7 +41,7 @@ The popup has an "Open scrape debugger" link that shows exactly what order data 
 
 ## Limitations
 
-- Matches by order total amount + date (±5 days). Multi-shipment orders where Amazon charges less than the full order total per charge won't match.
+- Matches by per-shipment charge amount + date (±8 days). Fetches invoice pages to extract individual shipment totals for split orders.
 - Only works for the bank/card account the Amazon order was charged to.
 - Requires being logged into Amazon in the same Chrome profile.
 - BofA's DOM selectors may need updating if BofA redesigns their transaction page.
