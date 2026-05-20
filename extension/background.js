@@ -623,9 +623,18 @@ function findMatches(charge, orders) {
       if (diff < nearestAmountDiff) nearestAmountDiff = diff;
     }
 
-    const amountMatch = amounts.some(amt => Math.abs(amt - charge.amount) < 0.02);
+    // Tax-aware tolerance: invoice sometimes stores pre-tax subtotal.
+    // Allow up to 15% or $5, whichever is smaller, to cover typical sales tax.
+    const tolerance = Math.min(charge.amount * 0.15, 5.00);
+    const amountMatch = amounts.some(amt => Math.abs(amt - charge.amount) <= tolerance);
 
-    if (amountMatch) {
+    // Multi-shipment single charge: Amazon sometimes bills multiple shipments
+    // as one card transaction equal to the sum of all shipment amounts.
+    const chargeAmounts = order.chargeAmounts || [];
+    const sumMatch = chargeAmounts.length > 1 &&
+      Math.abs(chargeAmounts.reduce((s, a) => s + a, 0) - charge.amount) < 0.02;
+
+    if (amountMatch || sumMatch) {
       results.push({ orderId: order.orderId, items: order.items, orderDate: order.date });
     }
   }
