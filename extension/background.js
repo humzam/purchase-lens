@@ -80,7 +80,10 @@ async function handleMatchCharges(charges) {
   minDate.setDate(minDate.getDate() - DATE_WINDOW_DAYS);
   maxDate.setDate(maxDate.getDate() + DATE_WINDOW_DAYS);
 
-  await ensureOrdersLoaded(minDate, maxDate);
+  // Kick off a scrape if needed but don't wait — return cached results immediately.
+  // When the scrape finishes, notifyBofaTabs() pushes ORDERS_UPDATED so the
+  // content script re-annotates with the fresh data.
+  ensureOrdersLoaded(minDate, maxDate).catch(console.error);
 
   const { orders = [] } = await chrome.storage.local.get('orders');
   console.log('[ACI BG] Total cached orders:', orders.length);
@@ -135,6 +138,7 @@ async function ensureOrdersLoaded(minDate, maxDate) {
       });
 
       console.log('[ACI BG] Stored', newOrders.length, 'new order(s)');
+      if (newOrders.length > 0) notifyBofaTabs();
     } catch (e) {
       console.warn('[ACI BG] Tab scrape failed:', e.message);
     } finally {
@@ -161,6 +165,16 @@ async function refreshOrders() {
     lastFetched: null,
   });
   console.log('[ACI BG] Cleared', staleIds.length, 'recent order(s) for refresh.');
+}
+
+function notifyBofaTabs() {
+  chrome.tabs.query({ url: '*://*.bankofamerica.com/*' }, tabs => {
+    for (const tab of tabs) {
+      chrome.tabs.sendMessage(tab.id, { type: 'ORDERS_UPDATED' }, () => {
+        void chrome.runtime.lastError; // suppress "no receiver" errors if tab has no content script
+      });
+    }
+  });
 }
 
 // ─── Tab-Based Amazon Scraper ─────────────────────────────────────────────────
@@ -202,7 +216,7 @@ async function fetchOrdersViaTab(minDate, maxDate) {
       }
 
       // Let JS fully render before injecting.
-      await new Promise(r => setTimeout(r, 2000));
+      await new Promise(r => setTimeout(r, 600));
 
       const result = await new Promise((resolve, reject) => {
         chrome.scripting.executeScript({ target: { tabId }, func: scrapePageWithInvoices }, res => {

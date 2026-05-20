@@ -20,6 +20,11 @@
   const observer = new MutationObserver(scheduleRun);
   observer.observe(document.body, { childList: true, subtree: true });
 
+  // When the background scrape finishes, re-annotate with fresh data.
+  chrome.runtime.onMessage.addListener(msg => {
+    if (msg.type === 'ORDERS_UPDATED') scheduleRun();
+  });
+
   // Also run immediately in case the page was already loaded.
   scheduleRun();
 
