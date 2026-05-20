@@ -138,7 +138,7 @@ async function ensureOrdersLoaded(minDate, maxDate) {
       });
 
       console.log('[ACI BG] Stored', newOrders.length, 'new order(s)');
-      if (newOrders.length > 0) notifyBofaTabs();
+      notifyBofaTabs();
     } catch (e) {
       console.warn('[ACI BG] Tab scrape failed:', e.message);
     } finally {
@@ -151,20 +151,12 @@ async function ensureOrdersLoaded(minDate, maxDate) {
 }
 
 async function refreshOrders() {
-  const { fetchedOrderIds = [], orders = [] } = await chrome.storage.local.get([
-    'fetchedOrderIds',
-    'orders',
-  ]);
-  const thirtyDaysAgo = Date.now() - 30 * 86400000;
-  const staleIds = orders
-    .filter(o => o.date && new Date(o.date).getTime() > thirtyDaysAgo)
-    .map(o => o.orderId);
-  await chrome.storage.local.set({
-    fetchedOrderIds: fetchedOrderIds.filter(id => !staleIds.includes(id)),
-    orders: orders.filter(o => !staleIds.includes(o.orderId)),
-    lastFetched: null,
-  });
-  console.log('[ACI BG] Cleared', staleIds.length, 'recent order(s) for refresh.');
+  // Clear only the freshness flag so the next BofA visit triggers a re-scrape.
+  // We intentionally keep the existing orders in storage so the initial
+  // MATCH_CHARGES still annotates with the current cache while the fresh
+  // scrape runs in the background.
+  await chrome.storage.local.set({ lastFetched: null });
+  console.log('[ACI BG] Cache freshness cleared — will re-sync on next BofA visit.');
 }
 
 function notifyBofaTabs() {
