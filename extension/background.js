@@ -600,21 +600,42 @@ async function scrapePageWithInvoices() {
 function findMatches(charge, orders) {
   const chargeDate = new Date(charge.date);
   const results = [];
+  let nearestDaysDiff = Infinity;
+  let nearestAmountDiff = Infinity;
 
   for (const order of orders) {
     if (!order.date) continue;
     const orderDate = new Date(order.date);
     const daysDiff = Math.abs((chargeDate - orderDate) / 86400000);
-    if (daysDiff > DATE_WINDOW_DAYS + 3) continue;
 
-    const amountMatch = (order.chargeAmounts || []).some(
-      amt => Math.abs(amt - charge.amount) < 0.02
-    );
-    const totalMatch = order.total && Math.abs(order.total - charge.amount) < 0.02;
+    // Track closest order for diagnostics even if outside the window.
+    if (daysDiff < nearestDaysDiff) nearestDaysDiff = daysDiff;
 
-    if (amountMatch || totalMatch) {
+    // Amazon stores order placement date; the card is charged on ship date which
+    // can be 2+ weeks later. Use a 21-day window to cover delayed/slow shipments.
+    if (daysDiff > 21) continue;
+
+    const amounts = [...(order.chargeAmounts || [])];
+    if (order.total) amounts.push(order.total);
+
+    for (const amt of amounts) {
+      const diff = Math.abs(amt - charge.amount);
+      if (diff < nearestAmountDiff) nearestAmountDiff = diff;
+    }
+
+    const amountMatch = amounts.some(amt => Math.abs(amt - charge.amount) < 0.02);
+
+    if (amountMatch) {
       results.push({ orderId: order.orderId, items: order.items, orderDate: order.date });
     }
+  }
+
+  if (results.length === 0) {
+    console.log(
+      `[ACI BG] No match for ${charge.date} $${charge.amount.toFixed(2)}:`,
+      `nearest date diff=${nearestDaysDiff.toFixed(1)}d,`,
+      `nearest amount diff=$${nearestAmountDiff.toFixed(2)}`
+    );
   }
 
   return results;
