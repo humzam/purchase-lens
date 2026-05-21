@@ -29,8 +29,3 @@ YOUR DATA NEVER LEAVES YOUR DEVICE
 
 There is no backend, no account to create, and no data collection of any kind. Your bank statements and Amazon order history are read locally in your browser and stored only in browser storage. The only network calls are from your browser directly to Amazon and BofA using your existing sessions, just like browsing those sites normally.
 
-REQUIREMENTS
-
-- A Bank of America account
-- An Amazon account
-- Must be logged into both in the same Chrome profile
