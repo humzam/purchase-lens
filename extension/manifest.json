@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "Amazon Charge Identifier",
+  "name": "Purchase Lens",
   "version": "1.0",
   "description": "Annotates Amazon charges on Bank of America statements with actual item names.",
   "permissions": ["storage", "alarms", "tabs", "scripting"],
@@ -25,7 +25,7 @@
   ],
   "action": {
     "default_popup": "popup.html",
-    "default_title": "Amazon Charge Identifier",
+    "default_title": "Purchase Lens",
     "default_icon": {
       "16": "icons/icon16.png",
       "48": "icons/icon48.png",

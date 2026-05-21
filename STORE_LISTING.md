@@ -10,9 +10,10 @@ Ever see a random Amazon charge on your statement and have no idea what it was f
 
 Finally know what you bought, right on your bank statement.
 
-Bank statements show Amazon charges as cryptic entries like "AMAZON MARKETPLA DES:INTERNET" with no description of what you actually bought. When Amazon splits a single order into multiple shipments, it becomes nearly impossible to reconcile your statement without cross-referencing your order history manually.
+Bank statements show Amazon charges as cryptic entries like "AMAZON MARKETPLA DES:INTERNET" with no description of what you actually bought. And then when Amazon splits a single order into multiple shipments, it becomes nearly impossible to reconcile your statement without cross-referencing your order history manually. Its a pain and makes doing personal finance super annoying.
 
-Amazon Charge Identifier fixes this automatically.
+
+Purchase Lens fixes this automatically.
 
 HOW IT WORKS
 
@@ -22,6 +23,7 @@ When you open your Bank of America transactions page, the extension silently rea
 - Hover to see the full item name and order number
 - Click the label to jump directly to that order on Amazon
 - Works with split shipments by matching individual shipment totals
+- Works on credit card statements, debit card statement, and checking account statements
 
 YOUR DATA NEVER LEAVES YOUR DEVICE
 

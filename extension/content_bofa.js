@@ -337,7 +337,7 @@
       max-width: 280px;
     `;
     hint.innerHTML = `
-      <strong>Amazon Charge Identifier</strong><br>
+      <strong>Purchase Lens</strong><br>
       Sign into Amazon in this browser to enable charge identification.
       <button style="display:block;margin-top:8px;font-size:12px;cursor:pointer;"
               onclick="this.parentElement.remove()">Dismiss</button>
