@@ -6,6 +6,8 @@ Annotates Amazon charges on your Bank of America statement with the actual item 
 
 ## Full Description
 
+Ever see a random Amazon charge on your statement and have no idea what it was for?
+
 **Finally know what you bought — right on your bank statement.**
 
 Bank statements show Amazon charges as cryptic entries like `AMAZON MARKETPLA DES:INTERNET` with no description of what you actually bought. When Amazon splits a single order into multiple shipments, it becomes nearly impossible to reconcile your statement without cross-referencing your order history manually.
