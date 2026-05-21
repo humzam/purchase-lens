@@ -4,7 +4,7 @@
 // bot detection blocks service worker requests — a real tab with JS execution passes.
 
 const ORDER_HISTORY_URL = 'https://www.amazon.com/gp/css/order-history';
-const DATE_WINDOW_DAYS = 5;
+const DATE_WINDOW_DAYS = 21;
 const ORDER_LOOKBACK_MONTHS = 3;
 const TAB_LOAD_TIMEOUT_MS = 30000;
 const MAX_PAGES = 20;
