@@ -502,12 +502,15 @@ async function scrapePageWithInvoices() {
       }
 
       // Strategy 1: "Order Total" rows — one per shipment section in multi-shipment invoices.
+      // Take the LAST dollar amount in the row: the row typically reads
+      // "Order Total: $subtotal ... $post-tax-total" and we want the post-tax total.
       for (const cell of doc.querySelectorAll('td, th')) {
         if (/^order\s+total[:\s]*$/i.test(cell.textContent.trim())) {
           const row = cell.closest('tr');
           if (row) {
-            const m = row.textContent.match(/\$([\d,]+\.\d{2})/);
-            if (m) addAmt(parseFloat(m[1].replace(/,/g, '')));
+            const allAmts = [...row.textContent.matchAll(/\$([\d,]+\.\d{2})/g)]
+              .map(m => parseFloat(m[1].replace(/,/g, '')));
+            if (allAmts.length > 0) addAmt(allAmts[allAmts.length - 1]);
           }
         }
       }
@@ -518,8 +521,9 @@ async function scrapePageWithInvoices() {
           if (/^grand\s+total[:\s]*$/i.test(cell.textContent.trim())) {
             const row = cell.closest('tr');
             if (row) {
-              const m = row.textContent.match(/\$([\d,]+\.\d{2})/);
-              if (m) addAmt(parseFloat(m[1].replace(/,/g, '')));
+              const allAmts = [...row.textContent.matchAll(/\$([\d,]+\.\d{2})/g)]
+                .map(m => parseFloat(m[1].replace(/,/g, '')));
+              if (allAmts.length > 0) addAmt(allAmts[allAmts.length - 1]);
             }
           }
         }
@@ -623,10 +627,7 @@ function findMatches(charge, orders) {
       if (diff < nearestAmountDiff) nearestAmountDiff = diff;
     }
 
-    // Tax-aware tolerance: invoice sometimes stores pre-tax subtotal.
-    // Allow up to 15% or $5, whichever is smaller, to cover typical sales tax.
-    const tolerance = Math.min(charge.amount * 0.15, 5.00);
-    const amountMatch = amounts.some(amt => Math.abs(amt - charge.amount) <= tolerance);
+    const amountMatch = amounts.some(amt => Math.abs(amt - charge.amount) < 0.02);
 
     // Multi-shipment single charge: Amazon sometimes bills multiple shipments
     // as one card transaction equal to the sum of all shipment amounts.
