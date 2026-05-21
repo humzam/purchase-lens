@@ -17,6 +17,10 @@ Bank statements show Amazon charges as generic entries like `AMAZON MARKETPLA DE
 
 All data stays local in `chrome.storage.local` — nothing is sent to any server.
 
+## Privacy
+
+**We never see or store any of your data.** The extension runs entirely in your browser. Your bank statements, Amazon order history, and purchase details never leave your device — there is no backend, no analytics, and no external requests. The only network calls made are directly from your browser to Amazon and BofA, using your existing sessions.
+
 ## Installation (Developer Mode)
 
 1. Clone this repo
