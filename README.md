@@ -34,6 +34,7 @@ All data stays local in `chrome.storage.local` — nothing is sent to any server
 - An Amazon tab will briefly appear and close in the background
 - Amazon charges will show a label like: `📦 FMS Car Accessory Lipo Battery 2S 7.4V...`
 - Hover the label to see the full item name and order number
+- Click the label to open the order directly on Amazon
 
 ## Popup
 
