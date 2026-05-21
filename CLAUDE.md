@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Loading the Extension
 
-There is no build step. Load `extension/` directly via `chrome://extensions` → Developer mode → Load unpacked. After any change to `background.js` or `manifest.json`, click the reload icon on the extensions page. Content script changes take effect on the next page load without a full reload.
+There is no build step. Load the repo root directly via `chrome://extensions` → Developer mode → Load unpacked. After any change to `background.js` or `manifest.json`, click the reload icon on the extensions page. Content script changes take effect on the next page load without a full reload.
 
 To force a fresh data scrape during testing: click the extension icon → **Clear Cache & Re-sync**, or open DevTools → Application → Storage → `chrome.storage.local` → Clear All.
 
